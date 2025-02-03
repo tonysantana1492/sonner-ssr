@@ -1,27 +1,25 @@
-https://github.com/vallezw/sonner/assets/50796600/59b95cb7-9068-4f3e-8469-0b35d9de5cf0
-
-[Sonner](https://sonner.emilkowal.ski/) is an opinionated toast component for React. You can read more about why and how it was built [here](https://emilkowal.ski/ui/building-a-toast-component).
+Sonner-SSR is an opinionated toast component for Next based on [sonner](https://sonner.emilkowal.ski/).
 
 ## Usage
 
 To start using the library, install it in your project:
 
 ```bash
-npm install sonner
+npm install sonner-ssr
 ```
 
-Add `<Toaster />` to your app, it will be the place where all your toasts will be rendered.
+Add `<ToasterProvider />` to your app, it will be the place where all your toasts will be rendered.
 After that you can use `toast()` from anywhere in your app.
 
 ```jsx
-import { Toaster, toast } from 'sonner';
+'use server'
 
-// ...
+import { ToasterProvider, toast } from 'sonner-ssr';
 
-function App() {
+export default AppPage() {
   return (
     <div>
-      <Toaster />
+      <ToasterProvider />
       <button onClick={() => toast('My first toast')}>Give me a toast</button>
     </div>
   );
