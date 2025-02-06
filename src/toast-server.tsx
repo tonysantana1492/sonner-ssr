@@ -1,25 +1,48 @@
-import React from "react";
-import DOMPurify from "isomorphic-dompurify";
+import React from 'react';
 
-import { state } from "./state";
-import type { Toast } from "./types";
+import { ToastState } from './state';
+import { ToastT } from './types';
 
-const sanitize = function (content: string | undefined) {
-  if (!content) return undefined;
+function sanitizeString(str) {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
-  return DOMPurify.sanitize(content);
-};
+function sanitize(node) {
+  if (typeof node === 'string') {
+    return sanitizeString(node);
+  }
+
+  if (React.isValidElement(node)) {
+    const sanitizedProps = {};
+    for (const [key, value] of Object.entries(node.props)) {
+      sanitizedProps[key] = sanitize(value);
+    }
+    return React.cloneElement(node, sanitizedProps);
+  }
+
+  if (Array.isArray(node)) {
+    return node.map(sanitize);
+  }
+
+  return node;
+}
 
 export const ServerToastRegister = function () {
-  const toasts: Toast[] = state.globalToasts.map((toast) => {
+  const toasts: ToastT[] = ToastState.globalToasts.map((toast) => {
     // Remove toasts from the global state
-    state.removeToast(toast.id);
+    ToastState.removeToast(toast.id);
 
     // Sanitizing the contents of the toast to prevent XSS attack.
     return {
       ...toast,
-      title: sanitize(toast.title),
-      description: sanitize(toast.description),
+      title: 'title' in toast && typeof toast.title !== 'function' ? sanitize(toast.title) : undefined,
+      description:
+        'description' in toast && typeof toast.description !== 'function' ? sanitize(toast.description) : undefined,
     };
   });
 
@@ -28,7 +51,7 @@ export const ServerToastRegister = function () {
       suppressHydrationWarning
       dangerouslySetInnerHTML={{
         __html: `
-          window.toasts = JSON.parse(\`${JSON.stringify(toasts)}\`);
+          self.__toasts = JSON.parse(\`${JSON.stringify(toasts)}\`);
         `,
       }}
     ></script>

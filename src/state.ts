@@ -1,72 +1,258 @@
-import { nanoid } from 'nanoid';
+import type { ExternalToast, PromiseData, PromiseT, ToastT, ToastToDismiss, ToastTypes } from './types';
 
-import type { SubscriberFn, Toast, ToastInternalProperties, Toasts } from './types';
-import { TOAST_INDICATOR } from './types';
+import React from 'react';
 
-class Observable {
-  private toasts: Toasts;
-  private subscribers: Array<SubscriberFn>;
+let toastsCounter = 1;
+
+type titleT = (() => React.ReactNode) | React.ReactNode;
+
+class Observer {
+  subscribers: Array<(toast: ExternalToast | ToastToDismiss) => void>;
+  toasts: Array<ToastT | ToastToDismiss>;
+  dismissedToasts: Set<string | number>;
 
   get globalToasts() {
     return this.toasts;
   }
 
-  public constructor() {
-    this.toasts = [];
+  constructor() {
     this.subscribers = [];
+    this.toasts = [];
+    this.dismissedToasts = new Set();
   }
 
-  /**
-   * The function allows entities to register a subscriber that
-   * allows entities to listen to changes in state.
-   */
-  public subscribe(subscriberFn: SubscriberFn) {
-    this.subscribers.push(subscriberFn);
-  }
+  // We use arrow functions to maintain the correct `this` reference
+  subscribe = (subscriber: (toast: ToastT | ToastToDismiss) => void) => {
+    this.subscribers.push(subscriber);
 
-  /**
-   * The function is responsible for notifying the subscriber
-   * that a new toast has been added.
-   *
-   * NOTE: the state is managed by the subscribers and independent of the
-   * global state.
-   *
-   */
-  public createToast(toast: Omit<Toast, ToastInternalProperties>, indicator: TOAST_INDICATOR) {
-    const { description, title } = toast;
-
-    const toastObject: Toast = {
-      id: nanoid(),
-      dismisable: false,
-      title,
-      indicator,
-      description,
-      duration: 5000,
+    return () => {
+      const index = this.subscribers.indexOf(subscriber);
+      this.subscribers.splice(index, 1);
     };
+  };
 
-    // Adding the toast to the global state.
-    this.toasts = [toastObject, ...this.toasts];
+  publish = (data: ToastT) => {
+    this.subscribers.forEach((subscriber) => subscriber(data));
+  };
 
-    // Notifying the subscribers about the creation of the toast.
-    this.subscribers.forEach(subscriber => {
-      subscriber(toastObject);
+  addToast = (data: ToastT) => {
+    this.publish(data);
+    this.toasts = [...this.toasts, data];
+  };
+
+  create = (
+    data: ExternalToast & {
+      message?: titleT;
+      type?: ToastTypes;
+      promise?: PromiseT;
+      jsx?: React.ReactElement;
+    },
+  ) => {
+    const { message, ...rest } = data;
+    const id = typeof data?.id === 'number' || data.id?.length > 0 ? data.id : toastsCounter++;
+    const alreadyExists = this.toasts.find((toast) => {
+      return toast.id === id;
     });
+    const dismissible = data.dismissible === undefined ? true : data.dismissible;
+
+    if (this.dismissedToasts.has(id)) {
+      this.dismissedToasts.delete(id);
+    }
+
+    if (alreadyExists) {
+      this.toasts = this.toasts.map((toast) => {
+        if (toast.id === id) {
+          this.publish({ ...toast, ...data, id, title: message });
+          return {
+            ...toast,
+            ...data,
+            id,
+            dismissible,
+            title: message,
+          };
+        }
+
+        return toast;
+      });
+    } else {
+      this.addToast({ title: message, ...rest, dismissible, id });
+    }
+
+    return id;
+  };
+
+  dismiss = (id?: number | string) => {
+    this.dismissedToasts.add(id);
+
+    if (!id) {
+      this.toasts.forEach((toast) => {
+        this.subscribers.forEach((subscriber) => subscriber({ id: toast.id, dismiss: true }));
+      });
+    }
+    this.subscribers.forEach((subscriber) => subscriber({ id, dismiss: true }));
+    return id;
+  };
+
+  removeToast(id: number | string) {
+    this.toasts = this.toasts.filter((toast) => toast.id !== id);
   }
 
-  public removeToast(toastId: string) {
-    this.toasts = this.toasts.filter(toast => toast.id !== toastId);
-  }
+  message = (message: titleT | React.ReactNode, data?: ExternalToast) => {
+    return this.create({ ...data, message });
+  };
+
+  error = (message: titleT | React.ReactNode, data?: ExternalToast) => {
+    return this.create({ ...data, message, type: 'error' });
+  };
+
+  success = (message: titleT | React.ReactNode, data?: ExternalToast) => {
+    return this.create({ ...data, type: 'success', message });
+  };
+
+  info = (message: titleT | React.ReactNode, data?: ExternalToast) => {
+    return this.create({ ...data, type: 'info', message });
+  };
+
+  warning = (message: titleT | React.ReactNode, data?: ExternalToast) => {
+    return this.create({ ...data, type: 'warning', message });
+  };
+
+  loading = (message: titleT | React.ReactNode, data?: ExternalToast) => {
+    return this.create({ ...data, type: 'loading', message });
+  };
+
+  promise = <ToastData>(promise: PromiseT<ToastData>, data?: PromiseData<ToastData>) => {
+    if (!data) {
+      // Nothing to show
+      return;
+    }
+
+    let id: string | number | undefined = undefined;
+    if (data.loading !== undefined) {
+      id = this.create({
+        ...data,
+        promise,
+        type: 'loading',
+        message: data.loading,
+        description: typeof data.description !== 'function' ? data.description : undefined,
+      });
+    }
+
+    const p = promise instanceof Promise ? promise : promise();
+
+    let shouldDismiss = id !== undefined;
+    let result: ['resolve', ToastData] | ['reject', unknown];
+
+    const originalPromise = p
+      .then(async (response) => {
+        result = ['resolve', response];
+        const isReactElementResponse = React.isValidElement(response);
+        if (isReactElementResponse) {
+          shouldDismiss = false;
+          this.create({ id, type: 'default', message: response });
+        } else if (isHttpResponse(response) && !response.ok) {
+          shouldDismiss = false;
+          const message =
+            typeof data.error === 'function' ? await data.error(`HTTP error! status: ${response.status}`) : data.error;
+          const description =
+            typeof data.description === 'function'
+              ? await data.description(`HTTP error! status: ${response.status}`)
+              : data.description;
+          this.create({ id, type: 'error', message, description });
+        } else if (data.success !== undefined) {
+          shouldDismiss = false;
+          const message = typeof data.success === 'function' ? await data.success(response) : data.success;
+          const description =
+            typeof data.description === 'function' ? await data.description(response) : data.description;
+          this.create({ id, type: 'success', message, description });
+        }
+      })
+      .catch(async (error) => {
+        result = ['reject', error];
+        if (data.error !== undefined) {
+          shouldDismiss = false;
+          const message = typeof data.error === 'function' ? await data.error(error) : data.error;
+          const description = typeof data.description === 'function' ? await data.description(error) : data.description;
+          this.create({ id, type: 'error', message, description });
+        }
+      })
+      .finally(() => {
+        if (shouldDismiss) {
+          // Toast is still in load state (and will be indefinitely — dismiss it)
+          this.dismiss(id);
+          id = undefined;
+        }
+
+        data.finally?.();
+      });
+
+    const unwrap = () =>
+      new Promise<ToastData>((resolve, reject) =>
+        originalPromise.then(() => (result[0] === 'reject' ? reject(result[1]) : resolve(result[1]))).catch(reject),
+      );
+
+    if (typeof id !== 'string' && typeof id !== 'number') {
+      // cannot Object.assign on undefined
+      return { unwrap };
+    } else {
+      return Object.assign(id, { unwrap });
+    }
+  };
+
+  custom = (jsx: (id: number | string) => React.ReactElement, data?: ExternalToast) => {
+    const id = data?.id || toastsCounter++;
+    this.create({ jsx: jsx(id), id, ...data });
+    return id;
+  };
+
+  getActiveToasts = () => {
+    return this.toasts.filter((toast) => !this.dismissedToasts.has(toast.id));
+  };
 }
-export const state = new Observable();
 
-const basicCreateFn =
-  (indicator: TOAST_INDICATOR = TOAST_INDICATOR.info) =>
-  (title: string, toast?: Omit<Toast, ToastInternalProperties>) =>
-    state.createToast({ ...toast, title }, indicator);
+export const ToastState = new Observer();
 
-export const toast = Object.assign(basicCreateFn(), {
-  info: basicCreateFn(TOAST_INDICATOR.info),
-  warn: basicCreateFn(TOAST_INDICATOR.warn),
-  error: basicCreateFn(TOAST_INDICATOR.error),
-  success: basicCreateFn(TOAST_INDICATOR.success),
-});
+// bind this to the toast function
+const toastFunction = (message: titleT, data?: ExternalToast) => {
+  const id = data?.id || toastsCounter++;
+
+  ToastState.addToast({
+    title: message,
+    ...data,
+    id,
+  });
+  return id;
+};
+
+const isHttpResponse = (data: any): data is Response => {
+  return (
+    data &&
+    typeof data === 'object' &&
+    'ok' in data &&
+    typeof data.ok === 'boolean' &&
+    'status' in data &&
+    typeof data.status === 'number'
+  );
+};
+
+const basicToast = toastFunction;
+
+const getHistory = () => ToastState.toasts;
+const getToasts = () => ToastState.getActiveToasts();
+
+// We use `Object.assign` to maintain the correct types as we would lose them otherwise
+export const toast = Object.assign(
+  basicToast,
+  {
+    success: ToastState.success,
+    info: ToastState.info,
+    warning: ToastState.warning,
+    error: ToastState.error,
+    custom: ToastState.custom,
+    message: ToastState.message,
+    promise: ToastState.promise,
+    dismiss: ToastState.dismiss,
+    loading: ToastState.loading,
+  },
+  { getHistory, getToasts },
+);
