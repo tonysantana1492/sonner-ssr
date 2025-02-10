@@ -32,7 +32,7 @@ function sanitize(node) {
   return node;
 }
 
-export const ServerToastRegister = function () {
+export const ToasterServerRegister = function () {
   const toasts: ToastT[] = ToastState.globalToasts.map((toast) => {
     // Remove toasts from the global state
     ToastState.removeToast(toast.id);
