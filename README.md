@@ -56,12 +56,13 @@ Add `<ToasterProvider />` to your app. It will be the place where all your toast
 ```jsx
 'use server';
 
-import { ToasterProvider, toast } from 'sonner-ssr';
+import type { PropsWithChildren } from 'react';
+import { ToasterProvider } from 'sonner-ssr';
 
 export default function RootLayout({ children }: PropsWithChildren) {
   return (
     <html>
-      <body className={cn('app-body bg-background font-sans antialiased', inter.variable)}>
+      <body className="app-body bg-background font-sans antialiased">
         {children}
         <ToasterProvider />
       </body>
